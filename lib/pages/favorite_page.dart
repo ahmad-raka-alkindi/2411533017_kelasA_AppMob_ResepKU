@@ -1,9 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:resepku/models/favorite.dart';
+import 'package:resepku/pages/detail_page.dart';
 import 'package:resepku/providers/favorite_provider.dart';
+import 'package:resepku/providers/settings_provider.dart';
+import 'package:resepku/widgets/recipe_image.dart';
 
 class FavoritePage extends StatelessWidget {
   const FavoritePage({super.key});
+
+  Future<void> _editNote(BuildContext context, Favorite item) async {
+    final note = await showDialog<String>(
+      context: context,
+      builder: (context) => _NoteDialog(initial: item.note),
+    );
+    if (note == null || !context.mounted) return;
+    await context.read<FavoriteProvider>().updateNote(
+      item.recipe.id,
+      note.trim(),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -11,38 +27,23 @@ class FavoritePage extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Favorit Saya'),
         actions: [
-          Consumer<FavoriteProvider>(
-            builder: (context, favorite, child) => TextButton(
-              onPressed: favorite.count == 0
-                  ? null
-                  : () async {
-                      final shouldClear = await showDialog<bool>(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: const Text('Hapus semua favorit?'),
-                          content: const Text(
-                            'Semua resep favorit akan dihapus.',
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () =>
-                                  Navigator.of(context).pop(false),
-                              child: const Text('Batal'),
-                            ),
-                            TextButton(
-                              onPressed: () =>
-                                  Navigator.of(context).pop(true),
-                              child: const Text('Hapus semua'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (shouldClear == true && context.mounted) {
-                        context.read<FavoriteProvider>().clear();
-                      }
-                    },
-              child: const Text('Hapus semua'),
-            ),
+          Consumer2<FavoriteProvider, SettingsProvider>(
+            builder: (context, favorite, settings, child) {
+              return PopupMenuButton<FavoriteSort>(
+                tooltip: 'Urutkan favorit',
+                onSelected: settings.setFavoriteSort,
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: FavoriteSort.newest,
+                    child: Text('Terbaru disimpan'),
+                  ),
+                  const PopupMenuItem(
+                    value: FavoriteSort.name,
+                    child: Text('Nama A-Z'),
+                  ),
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -56,21 +57,136 @@ class FavoritePage extends StatelessWidget {
               ),
             );
           }
-          return ListView(
-            children: [
-              for (final recipe in favorite.items)
-                ListTile(
-                  title: Text(recipe.name),
-                  subtitle: Text(recipe.cuisine),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () => favorite.toggle(recipe),
+          final settings = context.watch<SettingsProvider>();
+          final items = [...favorite.items];
+          if (settings.favoriteSort == FavoriteSort.name) {
+            items.sort(
+              (a, b) => a.recipe.name.toLowerCase().compareTo(
+                b.recipe.name.toLowerCase(),
+              ),
+            );
+          } else {
+            items.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+          }
+          return ListView.separated(
+            itemCount: items.length,
+            separatorBuilder: (context, index) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final item = items[index];
+              final recipe = item.recipe;
+              return Dismissible(
+                key: ValueKey(recipe.id),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.only(right: 20),
+                  child: Icon(
+                    Icons.delete_outline,
+                    color: Theme.of(context).colorScheme.onErrorContainer,
                   ),
                 ),
-            ],
+                onDismissed: (direction) {
+                  context.read<FavoriteProvider>().toggle(recipe);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('${recipe.name} dihapus dari favorit'),
+                    ),
+                  );
+                },
+                child: ListTile(
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: SizedBox(
+                      width: 56,
+                      height: 56,
+                      child: RecipeImage(url: recipe.image, cacheWidth: 168),
+                    ),
+                  ),
+                  title: Text(recipe.name),
+                  subtitle: Text(
+                    '${item.note.isEmpty ? 'Belum ada catatan' : item.note}'
+                    '\nDimasak ${item.cookedCount} kali',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => DetailPage(recipe: recipe),
+                    ),
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Catatan',
+                        icon: const Icon(Icons.edit_note),
+                        onPressed: () => _editNote(context, item),
+                      ),
+                      IconButton(
+                        tooltip: 'Sudah dimasak',
+                        icon: const Icon(Icons.restaurant_menu),
+                        onPressed: () =>
+                            favorite.incrementCooked(item.recipe.id),
+                      ),
+                      IconButton(
+                        tooltip: 'Hapus dari favorit',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () => favorite.toggle(recipe),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           );
         },
       ),
+    );
+  }
+}
+
+class _NoteDialog extends StatefulWidget {
+  const _NoteDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_NoteDialog> createState() => _NoteDialogState();
+}
+
+class _NoteDialogState extends State<_NoteDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Catatan pribadi'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLines: 3,
+        decoration: const InputDecoration(hintText: 'Contoh: kurangi garam'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _controller.text),
+          child: const Text('Simpan'),
+        ),
+      ],
     );
   }
 }
